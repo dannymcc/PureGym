@@ -318,6 +318,8 @@
             const loginBtn = document.getElementById('loginBtn');
             const status = document.getElementById('status');
 
+            console.log('Login attempt started for:', email);
+
             if (!email || !pin) {
                 showStatus('Please enter both email and PIN', 'error');
                 return;
@@ -330,19 +332,50 @@
 
             loginBtn.disabled = true;
             loginBtn.textContent = 'Logging in...';
+            showStatus('Connecting to PureGym...', 'info');
             
             try {
-                const response = await fetch('https://auth.puregym.com/connect/token', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'Authorization': 'Basic cm8uY2xpZW50Og=='
-                    },
-                    body: `grant_type=password&username=${encodeURIComponent(email)}&password=${encodeURIComponent(pin)}&scope=pgcapi offline_access`
-                });
+                console.log('Making request to PureGym API...');
+                
+                // Try with a CORS proxy first
+                const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
+                const targetUrl = 'https://auth.puregym.com/connect/token';
+                
+                let response;
+                try {
+                    // First attempt: direct request
+                    response = await fetch(targetUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Authorization': 'Basic cm8uY2xpZW50Og==',
+                            'User-Agent': 'PureGymApp/1.0',
+                            'Accept': 'application/json'
+                        },
+                        body: `grant_type=password&username=${encodeURIComponent(email)}&password=${encodeURIComponent(pin)}&scope=pgcapi offline_access`
+                    });
+                } catch (corsError) {
+                    console.log('Direct request failed, trying CORS proxy...', corsError);
+                    showStatus('Direct connection failed, trying alternative...', 'info');
+                    
+                    // Second attempt: with CORS proxy
+                    response = await fetch(proxyUrl + targetUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Authorization': 'Basic cm8uY2xpZW50Og==',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: `grant_type=password&username=${encodeURIComponent(email)}&password=${encodeURIComponent(pin)}&scope=pgcapi offline_access`
+                    });
+                }
+
+                console.log('Response status:', response.status);
+                console.log('Response headers:', [...response.headers.entries()]);
 
                 if (response.ok) {
                     const data = await response.json();
+                    console.log('Login successful!', data);
                     authToken = data.access_token;
                     
                     // Save credentials with error handling
@@ -360,14 +393,45 @@
                         refreshQR();
                     }, 1000);
                 } else {
-                    throw new Error(`Login failed (${response.status})`);
+                    const errorText = await response.text();
+                    console.log('Error response:', errorText);
+                    throw new Error(`Login failed (${response.status}): ${errorText}`);
                 }
             } catch (error) {
-                showStatus(`Login failed: ${error.message}`, 'error');
+                console.error('Login error:', error);
+                let errorMessage = error.message;
+                
+                if (error.name === 'TypeError' && error.message.includes('fetch')) {
+                    errorMessage = 'CORS blocked - PureGym API blocks web browsers. Try the workaround below.';
+                }
+                
+                showStatus(`Login failed: ${errorMessage}`, 'error');
+                
+                // Show CORS workaround if needed
+                if (errorMessage.includes('CORS')) {
+                    setTimeout(() => {
+                        showCORSWorkaround();
+                    }, 2000);
+                }
             } finally {
                 loginBtn.disabled = false;
                 loginBtn.textContent = 'Login to PureGym';
             }
+        }
+
+        function showCORSWorkaround() {
+            const status = document.getElementById('status');
+            status.innerHTML = `
+                <div style="text-align: left; line-height: 1.4;">
+                    <strong>Browser blocked the request (CORS)</strong><br><br>
+                    <strong>Quick fix:</strong><br>
+                    1. Install a CORS browser extension<br>
+                    2. Or use the PureGym app to get your QR<br>
+                    3. Screenshot it and use as backup<br><br>
+                    <small>This happens because PureGym doesn't allow web browsers to access their API directly.</small>
+                </div>
+            `;
+            status.className = 'status error';
         }
 
         async function refreshQR() {
@@ -486,88 +550,4 @@
                 clearInterval(countdownTimer);
             }
             
-            const timerElement = document.getElementById('timer');
-            
-            countdownTimer = setInterval(() => {
-                if (!nextRefreshTime) return;
-                
-                const now = new Date();
-                const timeUntilRefresh = nextRefreshTime.getTime() - now.getTime();
-                
-                if (timeUntilRefresh <= 0) {
-                    timerElement.textContent = 'Refreshing...';
-                    clearInterval(countdownTimer);
-                    return;
-                }
-                
-                const minutes = Math.floor(timeUntilRefresh / 60000);
-                const seconds = Math.floor((timeUntilRefresh % 60000) / 1000);
-                timerElement.textContent = `Next refresh in ${minutes}:${seconds.toString().padStart(2, '0')}`;
-            }, 1000);
-        }
-
-        function showQRSection() {
-            document.getElementById('loginSection').classList.add('hidden');
-            document.getElementById('qrSection').classList.remove('hidden');
-        }
-
-        function showLoginSection() {
-            document.getElementById('qrSection').classList.add('hidden');
-            document.getElementById('loginSection').classList.remove('hidden');
-        }
-
-        function logout() {
-            authToken = null;
-            nextRefreshTime = null;
-            
-            if (refreshTimer) {
-                clearTimeout(refreshTimer);
-                refreshTimer = null;
-            }
-            
-            if (countdownTimer) {
-                clearInterval(countdownTimer);
-                countdownTimer = null;
-            }
-            
-            try {
-                localStorage.removeItem('puregym_token');
-                localStorage.removeItem('puregym_qr_data');
-            } catch (error) {
-                console.log('localStorage not available');
-            }
-            
-            document.getElementById('pin').value = '';
-            showLoginSection();
-        }
-
-        function showStatus(message, type) {
-            const status = document.getElementById('status');
-            status.textContent = message;
-            status.className = `status ${type}`;
-            status.classList.remove('hidden');
-            
-            if (type === 'success') {
-                setTimeout(() => {
-                    status.classList.add('hidden');
-                }, 3000);
-            }
-        }
-
-        // Handle app going to background/foreground
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && authToken) {
-                // App came to foreground, check if we need to refresh
-                try {
-                    const cachedData = localStorage.getItem('puregym_qr_data');
-                    if (cachedData) {
-                        const data = JSON.parse(cachedData);
-                        const refreshTime = new Date(data.refreshAt);
-                        const now = new Date();
-                        
-                        if (now >= refreshTime) {
-                            refreshQR();
-                        }
-                    }
-                } catch (error) {
-                    console.lo
+        
